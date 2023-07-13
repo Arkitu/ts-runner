@@ -1,9 +1,39 @@
 use std::collections::HashMap;
 use std::fs;
 use std::env;
+use std::rc::Rc;
 
-type Memory = HashMap<String, Value>;
+type Memory<'a> = HashMap<&'a String, Value<'a>>;
 
+struct Scope<'a> {
+    memory: Memory<'a>,
+    pub parent: Option<&'a Scope<'a>>
+}
+impl<'a> Scope<'a> {
+    fn new(parent: Option<&'a Scope<'a>>) -> Scope<'a> {
+        Scope {
+            memory: HashMap::new(),
+            parent
+        }
+    }
+    fn insert(&mut self, name: &'a String, value: Value<'a>) {
+        self.memory.insert(name, value);
+    }
+    fn get(&self, name: &String) -> Option<Value> {
+        match self.memory.get(name) {
+            Some(value) => Some(value.clone()),
+            None => match &self.parent {
+                Some(parent) => parent.get(name),
+                None => None
+            }
+        }
+    }
+    fn new_child(&mut self) -> Scope {
+        Scope::new(Some(self))
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Number {
     Int(isize),
     Float(f64),
@@ -11,58 +41,59 @@ enum Number {
     Infinity
 }
 
-struct Function {
-    name: String,
-    args: Vec<String>,
-    body: Vec<Expression>
+#[derive(Clone, Copy)]
+struct Function<'a> {
+    name: &'a String,
+    args: &'a Vec<&'a String>,
+    body: &'a Vec<Expression<'a>>
 }
 
-enum Value {
+#[derive(Clone)]
+enum Value<'a> {
     Number(Number),
     String(String),
     Bool(bool),
     Null,
     None,
     Undefined,
-    Function(Function),
-    Object(HashMap<String, Value>),
-    Array(Vec<Value>)
+    Function(Rc<Function<'a>>),
+    Object(Rc<HashMap<String, Value<'a>>>),
+    Array(Rc<Vec<Value<'a>>>)
 }
 
-enum Expression {
+#[derive(Clone)]
+enum Expression<'a> {
     // variable name, value
-    Assignement(String, Value),
+    Assignement(&'a String, Value<'a>),
     // function, args
-    FunctionCall(Function, Vec<Value>),
+    FunctionCall(Rc<Function<'a>>, Vec<Value<'a>>),
     // variable name
     Variable(String),
     // value
-    Value(Value)
+    Value(Value<'a>),
+    None
 }
-impl Expression {
-    fn run(&self, memory: &mut Memory) -> Value {
+impl<'a> Expression<'a> {
+    fn run(&self, scope: &'a mut Scope<'a>) -> Value<'a> {
         match self {
             Expression::Assignement(name, value) => {
-                memory.insert(name.clone(), value.clone());
+                scope.insert(name, value.clone());
                 Value::None
             },
             Expression::FunctionCall(function, args) => {
-                let mut memory: HashMap<String, Value> = HashMap::new();
-                for (i, arg) in args.iter().enumerate() {
-                    memory.insert(function.args[i].clone(), arg.clone());
+                let mut fn_scope = scope.new_child();
+                let function = *function.clone();
+                for (arg, value) in function.args.iter().zip(args) {
+                    fn_scope.insert(arg, value.clone());
                 }
-                for expression in function.body.iter() {
-                    expression.run(&mut memory);
+                let mut result = Value::None;
+
+                for expression in function.body {
+                    let refe = &mut fn_scope;
+                    expression.run(refe);
                 }
-                Value::None
-            },
-            Expression::Variable(name) => {
-                match memory.get(name) {
-                    Some(value) => value.clone(),
-                    None => Value::Undefined
-                }
-            },
-            Expression::Value(value) => value.clone()
+                result
+            }
         }
     }
 }
