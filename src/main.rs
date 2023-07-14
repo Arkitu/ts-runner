@@ -5,24 +5,25 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use async_recursion::async_recursion;
 
-type Memory<'a> = HashMap<Arc<String>, Arc<RwLock<Value<'a>>>>;
+type Memory<'a> = HashMap<String, Value<'a>>;
 
+#[derive(Clone)]
 struct Scope<'a> {
     memory: Memory<'a>,
-    pub parent: Option<Arc<RwLock<&'a mut Scope<'a>>>>
+    pub parent: Option<Arc<RwLock<Scope<'a>>>>
 }
 impl<'a> Scope<'a> {
-    fn new(parent: Option<Arc<RwLock<&'a mut Scope<'a>>>>) -> Scope<'a> {
+    fn new(parent: Option<Arc<RwLock<Scope<'a>>>>) -> Scope<'a> {
         Scope {
             memory: HashMap::new(),
             parent
         }
     }
-    fn insert(&mut self, name: Arc<String>, value: Value<'a>) {
-        self.memory.insert(name, Arc::new(RwLock::new(value)));
+    fn insert(&mut self, name: String, value: Value<'a>) {
+        self.memory.insert(name, value);
     }
     #[async_recursion]
-    async fn get(&self, name: Arc<String>) -> Option<Arc<RwLock<Value<'a>>>> {
+    async fn get(&self, name: String) -> Option<Value<'a>> {
         match self.memory.get(&name) {
             Some(value) => Some(value.clone()),
             None => {
@@ -32,9 +33,6 @@ impl<'a> Scope<'a> {
                 }
             }
         }
-    }
-    fn new_child(&'a mut self) -> Scope<'a> {
-        Scope::new(Some(Arc::new(RwLock::new(self))))
     }
 }
 
@@ -68,7 +66,7 @@ enum Value<'a> {
 #[derive(Clone)]
 enum Expression<'a> {
     // variable name, value
-    Assignement(Arc<String>, Value<'a>),
+    Assignement(String, Value<'a>),
     // function, args
     FunctionCall(Arc<Function<'a>>, Vec<Value<'a>>),
     // variable name
@@ -78,27 +76,34 @@ enum Expression<'a> {
     None
 }
 impl<'a> Expression<'a> {
-    fn run(&self, scope: &'a mut Scope<'a>) -> (Value<'a>, &'a mut Scope<'a>) {
+    #[async_recursion]
+    async fn run(&self, scope: Arc<RwLock<Scope<'a>>>) -> Value<'a> {
         match self {
             Expression::Assignement(name, value) => {
-                scope.insert(name.clone(), value.clone());
-                (Value::None, scope)
+                scope.write().await.insert(name.clone(), value.clone());
+                Value::None
             },
             Expression::FunctionCall(function, args) => {
-                let mut fn_scope = scope.new_child();
+                let mut fn_scope = Scope::new(Some(scope));
                 let function = *function.clone();
                 for (arg, value) in function.args.iter().zip(args) {
-                    fn_scope.insert(arg.clone(), value.clone());
+                    fn_scope.insert(arg.to_string(), value.clone());
                 }
                 let mut result = Value::None;
-
-                let mut refe = &mut fn_scope;
-
+                let fn_scope = Arc::new(RwLock::new(fn_scope));
                 for expression in function.body {
-                    refe = expression.run(refe).1
+                    result = expression.run(fn_scope.clone()).await;
                 }
-                (result, scope)
-            }
+                result
+            },
+            Expression::Variable(name) => {
+                match scope.read().await.get(name.clone()).await {
+                    Some(value) => value,
+                    None => Value::Undefined
+                }
+            },
+            Expression::Value(value) => value.clone(),
+            Expression::None => Value::None
         }
     }
 }
@@ -114,5 +119,5 @@ fn main() {
 
     let mut memory: HashMap<String, Value> = HashMap::new();
 
-
+    let mut root_scope = Scope::new(None);
 }
