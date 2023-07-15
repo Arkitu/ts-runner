@@ -62,11 +62,13 @@ enum Value<'a> {
     Undefined,
     Function(Arc<Function<'a>>),
     Object(Arc<Memory<'a>>),
-    Array(Arc<Vec<Value<'a>>>)
+    Array(Arc<Vec<Value<'a>>>),
+    SpreadArray(Arc<Vec<Value<'a>>>)
 }
 
 #[derive(Clone)]
 enum Expression<'a> {
+    ExpressionList(Vec<Expression<'a>>),
     // variable name, value
     Assignement(VariableName<'a>, Arc<Expression<'a>>),
     // function, args
@@ -81,6 +83,13 @@ impl<'a> Expression<'a> {
     #[async_recursion]
     async fn run(&self, scope: Arc<RwLock<Scope<'a>>>) -> Value<'a> {
         match self {
+            Expression::ExpressionList(expressions) => {
+                let mut result = Value::None;
+                for expression in expressions {
+                    result = expression.run(scope.clone()).await;
+                }
+                result
+            },
             Expression::Assignement(name, exp) => {
                 scope.write().await.insert(name.clone(), exp.run(scope.clone()).await.clone());
                 Value::None
@@ -110,29 +119,139 @@ impl<'a> Expression<'a> {
     }
 }
 
-fn parse_expression(exp: &str) -> Expression<'static> {
-    let exp = exp.trim();
+/// Extract strings. ex: console.log("Hello world", "again!") -> console.log("0", "1")
+fn parse_strings(old_exp: &mut String, values: &mut Vec<Value>) {
+    let mut new_exp = old_exp.clone();
+    let mut last_string_start: (bool, usize, char) = (false, 0, 'a');
+    let mut removed_chars: isize = 0;
+
+    for (i, l) in old_exp.chars().enumerate() {
+        if last_string_start.0 {
+            if l != last_string_start.2 {
+                continue
+            }
+            let str_value = &old_exp[(last_string_start.1+1) as usize..i];
+            values.push(Value::String(str_value.to_string()));
+            new_exp.replace_range((last_string_start.1 as isize-removed_chars) as usize..(i as isize+1-removed_chars) as usize, &("\"".to_string() + &(values.len()-1).to_string() + "\""));
+            last_string_start = (false, 0, 'a');
+            removed_chars += str_value.len() as isize - 1;
+        } else if l == '"' || l == '\'' || l == '`' {
+            last_string_start = (true, i, l)
+        }
+    }
+
+    *old_exp = new_exp;
+}
+
+fn parse_symbol<'a>(old_exp: &mut String, values: &mut Vec<Value<'a>>, symbol: &str, value: Value<'a>) {
+    let mut new_exp = String::new();
+
+    let list = old_exp.split(symbol);
+    let length = list.clone().count();
+    for (i, x) in list.enumerate() {
+        new_exp.push_str(x);
+
+        if i == length-1 {
+            break
+        }
+
+        let char_before = x.chars().last().unwrap_or(symbol.chars().last().unwrap());
+        if char_before.is_alphanumeric() || char_before == '_' {
+            new_exp.push_str(symbol);
+            continue
+        }
+
+        values.push(value.clone());
+        new_exp.push_str(&("\"".to_string() + &(values.len()-1).to_string() + "\""));
+    }
+
+    *old_exp = new_exp;
+}
+
+fn parse_numbers(old_exp: &mut String, values: &mut Vec<Value>) {
+    let mut new_exp = String::new();
+    let mut last_number_start = (false, 0);
+    let mut removed_chars: isize = 0;
+
+    for (i, l) in old_exp.chars().enumerate() {
+        if last_number_start.0 {
+            if l.is_numeric() || l == '.' {
+                continue
+            }
+            let str_value = &old_exp[last_number_start.1..(i+1)];
+            println!("str_value: {}", str_value);
+            if str_value.contains('.') {
+                values.push(Value::Number(Number::Float(str_value.parse().unwrap())));
+            } else {
+                values.push(Value::Number(Number::Int(str_value.parse().unwrap())));
+            }
+            new_exp.replace_range((last_number_start.1 as isize-removed_chars) as usize..(i as isize+1-removed_chars) as usize, &("\"".to_string() + &(values.len()-1).to_string() + "\""));
+            last_number_start = (false, 0);
+            removed_chars += str_value.len() as isize - 3;
+        } else if l.is_numeric() {
+            let last_char = old_exp.chars().nth(i-1).unwrap_or(' ');
+
+            if last_char != ' ' 
+
+            last_number_start = (true, i)
+        }
+    }
+
+    *old_exp = new_exp;
+}
+
+fn parse_expression(exp: &str, values: &mut Vec<Value>) -> Expression<'static> {
+    let mut exp = exp.trim().to_string();
 
     if exp.len() == 0 {
         return Expression::None
     }
 
-    let mut tokens: Vec<&str> = exp.split(' ').collect();
+    println!("Base:            {}", exp);
 
-    if tokens.contains(&"=") {
-        if tokens[0] == "var" || tokens[0] == "let" || tokens[0] == "const" {
-            tokens.remove(0);
+    parse_strings(&mut exp, values);
+    println!("Without strings: {}", exp);
+
+    parse_symbol(&mut exp, values, "true", Value::Bool(true));
+    parse_symbol(&mut exp, values, "True", Value::Bool(true));
+    parse_symbol(&mut exp, values, "false", Value::Bool(false));
+    parse_symbol(&mut exp, values, "False", Value::Bool(false));
+    parse_symbol(&mut exp, values, "null", Value::Null);
+    parse_symbol(&mut exp, values, "undefined", Value::Undefined);
+    parse_symbol(&mut exp, values, "NaN", Value::Number(Number::NaN));
+    parse_symbol(&mut exp, values, "None", Value::None);
+    parse_symbol(&mut exp, values, "Infinity", Value::Number(Number::Infinity));
+    println!("Without symbols: {}", exp);
+
+    parse_numbers(&mut exp, values);
+    println!("Without numbers: {}", exp);
+
+    if exp.contains(';') {
+        let mut exps = Vec::new();
+        for exp in exp.split(';') {
+            exps.push(parse_expression(exp, values));
         }
-
-        let var_name = tokens[0];
-
-        let value = &tokens[tokens.iter().position(|&t| t == "=").unwrap()+1..];
-        let value = parse_expression(&value.join(" "));
-
-        Expression::Assignement(var_name.into(), Arc::new(value))
-    } else {
-        Expression::None
+        return Expression::ExpressionList(exps)
     }
+
+    Expression::None
+
+    // let mut tokens: Vec<&str> = exp.split(' ').collect();
+
+    // if tokens.contains(&"=") {
+    //     if tokens[0] == "var" || tokens[0] == "let" || tokens[0] == "const" {
+    //         tokens.remove(0);
+    //     }
+
+    //     let var_name = tokens[0];
+
+    //     let value = &tokens[tokens.iter().position(|&t| t == "=").unwrap()+1..];
+    //     let value = parse_expression(&value.join(" "));
+
+    //     Expression::Assignement(var_name.into(), Arc::new(value))
+    // } else {
+    //     Expression::None
+    // }
 }
 
 #[tokio::main]
@@ -140,14 +259,11 @@ async fn main() {
     let args = env::args().collect::<Vec<String>>();
     let filename = &args[1];
 
-    let contents = fs::read_to_string(filename)
+    let content = fs::read_to_string(filename)
         .expect("Something went wrong reading the file");
-
-    let expressions = contents.split(';');
 
     let mut root_scope = Scope::new(None);
 
-    for exp in expressions {
-        parse_expression(exp);
-    }
+    let mut values = Vec::new();
+    let root_exp = parse_expression(&content, &mut values);
 }
