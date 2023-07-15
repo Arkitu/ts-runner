@@ -38,7 +38,7 @@ impl<'a> Scope<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 enum Number {
     Int(isize),
     Float(f64),
@@ -46,13 +46,13 @@ enum Number {
     Infinity
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Function<'a> {
     args: &'a Vec<VariableName<'a>>,
     body: &'a Vec<Expression<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Value<'a> {
     Number(Number),
     String(String),
@@ -66,7 +66,7 @@ enum Value<'a> {
     SpreadArray(Arc<Vec<Value<'a>>>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Expression<'a> {
     ExpressionList(Vec<Expression<'a>>),
     // variable name, value
@@ -169,7 +169,7 @@ fn parse_symbol<'a>(old_exp: &mut String, values: &mut Vec<Value<'a>>, symbol: &
 }
 
 fn parse_numbers(old_exp: &mut String, values: &mut Vec<Value>) {
-    let mut new_exp = String::new();
+    let mut new_exp = old_exp.clone();
     let mut last_number_start = (false, 0);
     let mut removed_chars: isize = 0;
 
@@ -178,20 +178,21 @@ fn parse_numbers(old_exp: &mut String, values: &mut Vec<Value>) {
             if l.is_numeric() || l == '.' {
                 continue
             }
-            let str_value = &old_exp[last_number_start.1..(i+1)];
-            println!("str_value: {}", str_value);
+            let str_value = &old_exp[last_number_start.1..i];
             if str_value.contains('.') {
                 values.push(Value::Number(Number::Float(str_value.parse().unwrap())));
             } else {
                 values.push(Value::Number(Number::Int(str_value.parse().unwrap())));
             }
-            new_exp.replace_range((last_number_start.1 as isize-removed_chars) as usize..(i as isize+1-removed_chars) as usize, &("\"".to_string() + &(values.len()-1).to_string() + "\""));
+            new_exp.replace_range((last_number_start.1 as isize-removed_chars) as usize..(i as isize-removed_chars) as usize, &("\"".to_string() + &(values.len()-1).to_string() + "\""));
             last_number_start = (false, 0);
             removed_chars += str_value.len() as isize - 3;
         } else if l.is_numeric() {
             let last_char = old_exp.chars().nth(i-1).unwrap_or(' ');
 
-            if last_char != ' ' 
+            if last_char != ' ' && last_char != '(' && last_char != '[' && last_char != '{' && last_char != ',' && last_char != ':' && last_char != '=' && last_char != '+' && last_char != '-' && last_char != '*' && last_char != '/' && last_char != '%' && last_char != '^' && last_char != '&' && last_char != '|' && last_char != '!' && last_char != '<' && last_char != '>' && last_char != '?' && last_char != '.' {
+                continue
+            }
 
             last_number_start = (true, i)
         }
@@ -200,31 +201,26 @@ fn parse_numbers(old_exp: &mut String, values: &mut Vec<Value>) {
     *old_exp = new_exp;
 }
 
+fn parse_values(exp: &mut String, values: &mut Vec<Value>) {
+    parse_strings(exp, values);
+    parse_numbers(exp, values);
+    parse_symbol(exp, values, "true", Value::Bool(true));
+    parse_symbol(exp, values, "True", Value::Bool(true));
+    parse_symbol(exp, values, "false", Value::Bool(false));
+    parse_symbol(exp, values, "False", Value::Bool(false));
+    parse_symbol(exp, values, "null", Value::Null);
+    parse_symbol(exp, values, "undefined", Value::Undefined);
+    parse_symbol(exp, values, "NaN", Value::Number(Number::NaN));
+    parse_symbol(exp, values, "None", Value::None);
+    parse_symbol(exp, values, "Infinity", Value::Number(Number::Infinity));
+}
+
 fn parse_expression(exp: &str, values: &mut Vec<Value>) -> Expression<'static> {
     let mut exp = exp.trim().to_string();
 
     if exp.len() == 0 {
         return Expression::None
     }
-
-    println!("Base:            {}", exp);
-
-    parse_strings(&mut exp, values);
-    println!("Without strings: {}", exp);
-
-    parse_symbol(&mut exp, values, "true", Value::Bool(true));
-    parse_symbol(&mut exp, values, "True", Value::Bool(true));
-    parse_symbol(&mut exp, values, "false", Value::Bool(false));
-    parse_symbol(&mut exp, values, "False", Value::Bool(false));
-    parse_symbol(&mut exp, values, "null", Value::Null);
-    parse_symbol(&mut exp, values, "undefined", Value::Undefined);
-    parse_symbol(&mut exp, values, "NaN", Value::Number(Number::NaN));
-    parse_symbol(&mut exp, values, "None", Value::None);
-    parse_symbol(&mut exp, values, "Infinity", Value::Number(Number::Infinity));
-    println!("Without symbols: {}", exp);
-
-    parse_numbers(&mut exp, values);
-    println!("Without numbers: {}", exp);
 
     if exp.contains(';') {
         let mut exps = Vec::new();
@@ -254,6 +250,14 @@ fn parse_expression(exp: &str, values: &mut Vec<Value>) -> Expression<'static> {
     // }
 }
 
+fn parse_code(exp: &str) -> (Expression, Vec<Value>) {
+    let mut values = Vec::new();
+    let mut exp = exp.trim().to_string();
+    parse_values(&mut exp, &mut values);
+    let exp = parse_expression(&exp, &mut values);
+    (exp, values)
+}
+
 #[tokio::main]
 async fn main() {
     let args = env::args().collect::<Vec<String>>();
@@ -264,6 +268,8 @@ async fn main() {
 
     let mut root_scope = Scope::new(None);
 
-    let mut values = Vec::new();
-    let root_exp = parse_expression(&content, &mut values);
+    let (root_exp, values) = parse_code(&content);
+
+    println!("{:?}", root_exp);
+    println!("{:#?}", values);
 }
