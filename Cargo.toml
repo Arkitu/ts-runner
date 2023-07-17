@@ -9,3 +9,4 @@ edition = "2021"
 tokio = {version="*", features=["full"]}
 async-recursion = "*"
 fixedstr = "*"
+id-vec = "*"

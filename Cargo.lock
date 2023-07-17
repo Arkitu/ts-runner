@@ -95,6 +95,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-vec"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c9c16dab9e3409c9b131c028e63f51b1bf7be3735d8b285de46ffdcacf7b718"
+
+[[package]]
 name = "libc"
 version = "0.2.147"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -308,6 +314,7 @@ version = "0.1.0"
 dependencies = [
  "async-recursion",
  "fixedstr",
+ "id-vec",
  "tokio",
 ]
 
