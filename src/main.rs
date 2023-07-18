@@ -207,7 +207,7 @@ fn parse_value_in_context(ctx: &mut String, values: &mut Values, range: Range<us
 }
 
 #[derive(Debug)]
-enum ParseValue {
+enum ParsedValue {
     String(char),
     Number,
     Array,
@@ -217,11 +217,11 @@ enum ParseValue {
     None
 }
 
-fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut String, current_vals: &mut Vec<(ParseValue, usize, isize)>, removed_chars: &mut isize) {
-    let current_val = current_vals.last().unwrap_or(&(ParseValue::None, 0, 0));
+fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut String, current_vals: &mut Vec<(ParsedValue, usize, isize)>, removed_chars: &mut isize) {
+    let current_val = current_vals.last().unwrap_or(&(ParsedValue::None, 0, 0));
 
     match current_val.0 {
-        ParseValue::String(c) => {
+        ParsedValue::String(c) => {
             if l != c {
                 return;
             }
@@ -230,7 +230,7 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
             current_vals.pop();
             return
         },
-        ParseValue::Number => {
+        ParsedValue::Number => {
             if l.is_numeric() || l == '.' {
                 return
             }
@@ -239,7 +239,7 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
             current_vals.pop();
             iter_char(values, exp, i, l, new_exp, current_vals, removed_chars);
         },
-        ParseValue::Array => {
+        ParsedValue::Array => {
             if l == ']' {
                 let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
                 *removed_chars += parse_value_in_context(new_exp, values, range);
@@ -247,7 +247,7 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
                 return
             }
         },
-        ParseValue::Object => {
+        ParsedValue::Object => {
             if l == '}' {
                 let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
                 *removed_chars += parse_value_in_context(new_exp, values, range);
@@ -255,13 +255,13 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
                 return
             }
         },
-        ParseValue::Symbol(len) => {
+        ParsedValue::Symbol(len) => {
             if i-current_val.1 == len {
                 current_vals.pop();
             }
             return
         }
-        ParseValue::None => {}
+        ParsedValue::None => {}
     }
 
     let last_char = if i == 0 {
@@ -271,14 +271,14 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
     };
 
     if l == '"' || l == '\'' || l == '`' {
-        current_vals.push((ParseValue::String(l), i, removed_chars.to_owned()));
+        current_vals.push((ParsedValue::String(l), i, removed_chars.to_owned()));
     } else if l.is_numeric() {
-        current_vals.push((ParseValue::Number, i, removed_chars.to_owned()));
+        current_vals.push((ParsedValue::Number, i, removed_chars.to_owned()));
     } else if last_char == ' ' || last_char == ',' || last_char == ':' || last_char == '=' || last_char == '|' || last_char == '&' || last_char == '!' || last_char == '?' || last_char == '(' || last_char == '[' {
         if l == '[' {
-            current_vals.push((ParseValue::Array, i, removed_chars.to_owned()));
+            current_vals.push((ParsedValue::Array, i, removed_chars.to_owned()));
         } else if l == '{' {
-            current_vals.push((ParseValue::Object, i, removed_chars.to_owned()));
+            current_vals.push((ParsedValue::Object, i, removed_chars.to_owned()));
         } else if exp[i..exp.len()].starts_with("true") || exp[i..exp.len()].starts_with("True") || exp[i..exp.len()].starts_with("false") || exp[i..exp.len()].starts_with("False") || exp[i..exp.len()].starts_with("null") || exp[i..exp.len()].starts_with("Null") || exp[i..exp.len()].starts_with("undefined") || exp[i..exp.len()].starts_with("Undefined") || exp[i..exp.len()].starts_with("nan") || exp[i..exp.len()].starts_with("NaN") || exp[i..exp.len()].starts_with("Infinity") || exp[i..exp.len()].starts_with("infinity") || exp[i..exp.len()].starts_with("none") || exp[i..exp.len()].starts_with("None") {
             let len = if exp[i..exp.len()].starts_with("true") || exp[i..exp.len()].starts_with("True") || exp[i..exp.len()].starts_with("null") || exp[i..exp.len()].starts_with("Null") {
                 4
@@ -300,7 +300,7 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
                 let rel_i = ((i as isize)-removed_chars.to_owned()) as usize;
                 let range = rel_i..(rel_i+len);
                 *removed_chars += parse_value_in_context(new_exp, values, range);
-                current_vals.push((ParseValue::Symbol(len), i, removed_chars.to_owned()));
+                current_vals.push((ParsedValue::Symbol(len), i, removed_chars.to_owned()));
             }
         }
     }
@@ -309,17 +309,49 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
 fn parse_values(exp: &mut String, values: &mut Values) {
     let mut new_exp = exp.clone();
     // (value_type, start_index, removed_chars_at_start)
-    let mut current_vals: Vec<(ParseValue, usize, isize)> = Vec::new();
+    let mut current_vals: Vec<(ParsedValue, usize, isize)> = Vec::new();
     let mut removed_chars: isize = 0;
 
     for (i, l) in exp.chars().enumerate() {
         iter_char(values, exp, i, l, &mut new_exp, &mut current_vals, &mut removed_chars)
     }
+
+    *exp = new_exp;
 }
 
-fn parse_expression(exp: &str, values: &mut Values) -> Expression<'static> {
-    let exp = exp.trim().to_string();
+fn standardize_code(exp: &str) -> String {
+    let mut exp = exp.trim().to_string();
 
+    if exp.contains(';') {
+        let mut exps = Vec::new();
+        for exp in exp.split(';') {
+            exps.push(standardize_code(exp));
+        }
+        return exps.join(";")
+    }
+
+    exp = exp.replace('\n', "");
+
+    if exp.contains(',') {
+        let mut exps = Vec::new();
+        for exp in exp.split(',') {
+            exps.push(exp.trim());
+        }
+        exp = exps.join(",");
+    }
+
+    if exp.starts_with("var") {
+        exp = exp[3..exp.len()].trim().to_string();
+    } else if exp.starts_with("let") {
+        exp = exp[3..exp.len()].trim().to_string();
+    } else if exp.starts_with("const") {
+        exp = exp[5..exp.len()].trim().to_string();
+    }
+
+    exp
+}
+
+fn parse_expression<'a>(exp: &str, values: &mut Values<'a>) -> Expression<'a> {
     if exp.len() == 0 {
         return Expression::None
     }
@@ -330,9 +362,15 @@ fn parse_expression(exp: &str, values: &mut Values) -> Expression<'static> {
             exps.push(parse_expression(exp, values));
         }
         return Expression::ExpressionList(exps)
-    } else if exp.starts_with("return") {
+    }
+    
+    if exp.starts_with("return") {
         let exp = exp.replace("return", "");
-        return Expression::Return(Arc::new(parse_expression(&exp, values)))
+        return Expression::Return(Arc::new(parse_expression(exp.trim(), values)))
+    }
+
+    if exp.starts_with('"') && exp.ends_with('"') {
+        return Expression::Value(get_val_from_id(&values, exp).expect("Invalid value"));
     }
     
     // let mut tokens: Vec<&str> = exp.split(' ').collect();
@@ -347,10 +385,9 @@ fn parse_expression(exp: &str, values: &mut Values) -> Expression<'static> {
     //     let value = &tokens[tokens.iter().position(|&t| t == "=").unwrap()+1..];
     //     let value = parse_expression(&value.join(" "));
 
-    //     Expression::Assignement(var_name.into(), Arc::new(value))
-    // } else {
-    //     Expression::None
+    //     return Expression::Assignement(var_name.into(), Arc::new(value))
     // }
+
     Expression::None
 }
 
@@ -358,6 +395,9 @@ fn parse_code(exp: &str) -> (Expression, Values) {
     let mut values: Values = IdVec::new();
     let mut exp = exp.trim().to_string();
     parse_values(&mut exp, &mut values);
+    println!("{}", exp);
+    let exp = &standardize_code(&exp);
+    println!("{}", exp);
     let exp = parse_expression(&exp, &mut values);
     (exp, values)
 }
