@@ -68,6 +68,24 @@ enum Value<'a> {
     Object(Arc<Memory<'a>>),
     Array(Arc<Vec<Value<'a>>>)
 }
+impl Into<bool> for Value<'_> {
+    fn into(self) -> bool {
+        match self {
+            Value::Bool(b) => b,
+            Value::Number(Number::Int(i)) => i != 0,
+            Value::Number(Number::Float(f)) => f != 0.0,
+            Value::Number(Number::NaN) => false,
+            Value::Number(Number::Infinity) => true,
+            Value::String(s) => !s.is_empty(),
+            Value::Null => false,
+            Value::None => false,
+            Value::Undefined => false,
+            Value::Function(_) => true,
+            Value::Object(o) => !o.is_empty(),
+            Value::Array(a) => a.len() != 0
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Expression<'a> {
@@ -79,6 +97,8 @@ enum Expression<'a> {
     FunctionCall(Box<Function<'a>>, Vec<Expression<'a>>),
     // variable name
     Variable(VariableName<'a>),
+    // condition, if true, else
+    If(Box<Expression<'a>>, Box<Expression<'a>>, Option<Box<Expression<'a>>>),
     // value
     Value(Value<'a>),
     Return(Arc<Expression<'a>>),
@@ -126,6 +146,16 @@ impl<'a> Expression<'a> {
                     None => Value::Undefined
                 }
             },
+            Expression::If(condition, if_exp, else_exp) => {
+                if condition.run(scope.clone()).await.into() {
+                    if_exp.run(scope.clone()).await
+                } else {
+                    match else_exp {
+                        Some(exp) => exp.run(scope.clone()).await,
+                        None => Value::None
+                    }
+                }
+            }
             Expression::Value(value) => value.clone(),
             Expression::Return(exp) => {
                 exp.run(scope.clone()).await
@@ -208,6 +238,7 @@ fn parse_value_in_context(ctx: &mut String, values: &mut Values, range: Range<us
 
 #[derive(Debug)]
 enum ParsedValue {
+    // delimiter
     String(char),
     Number,
     Array,
@@ -319,6 +350,19 @@ fn parse_values(exp: &mut String, values: &mut Values) {
     *exp = new_exp;
 }
 
+const NO_SPACE_TOKENS: [&str; 47] = [
+    "+", "-", "*", "/", "%", "^",
+    "(", ")",
+    "[", "]",
+    "{", "}",
+    ":", ",", ";",
+    "=", "==", "===", "!=", "!==", ">", "<", ">=", "<=", "&&", "||", "!", "?", ".", "..", "...", "=>", "=>>", "<<", ">>", ">>>", "|", "&", "~", "++", "--", "+=", "-=", "*=", "/=", "%=", "^=",
+];
+
+const SPACE_TOKEN: [&str; 75] = [
+    "else", "if", "for", "while", "do", "switch", "case", "break", "continue", "return", "try", "catch", "finally", "throw", "new", "in", "of", "as", "is", "typeof", "void", "delete", "instanceof", "yield", "await", "async", "function", "class", "extends", "interface", "implements", "package", "import", "export", "from", "const", "let", "var", "with", "debugger", "default", "this", "super", "static", "private", "protected", "public", "enum", "declare", "module", "namespace", "require", "global", "declare", "type", "any", "number", "boolean", "string", "symbol", "object", "undefined", "null", "true", "false", "NaN", "Infinity", "none", "undefined", "null", "true", "false", "NaN", "Infinity", "none"
+];
+
 fn standardize_code(exp: &str) -> String {
     let mut exp = exp.trim().to_string();
 
@@ -332,12 +376,40 @@ fn standardize_code(exp: &str) -> String {
 
     exp = exp.replace('\n', "");
 
+    for token in NO_SPACE_TOKENS.iter() {
+        if exp.contains(token) {
+            let mut exps = Vec::new();
+            for exp in exp.split(token) {
+                exps.push(exp.trim());
+            }
+            exp = exps.join(token);
+        }
+    }
+
+    for token in SPACE_TOKEN.iter() {
+        if exp.contains(token) {
+            let mut exps = Vec::new();
+            for exp in exp.split(token) {
+                exps.push(exp.trim());
+            }
+            exp = exps.join(format!(" {} ", token).as_str());
+        }
+    }
+
     if exp.contains(',') {
         let mut exps = Vec::new();
         for exp in exp.split(',') {
             exps.push(exp.trim());
         }
         exp = exps.join(",");
+    }
+
+    if exp.contains("else") {
+        let mut exps = Vec::new();
+        for exp in exp.split("else") {
+            exps.push(exp.trim());
+        }
+        exp = exps.join("else");
     }
 
     if exp.starts_with("var") {
@@ -363,30 +435,62 @@ fn parse_expression<'a>(exp: &str, values: &mut Values<'a>) -> Expression<'a> {
         }
         return Expression::ExpressionList(exps)
     }
+
+    if exp.starts_with('"') && exp.ends_with('"') {
+        return Expression::Value(get_val_from_id(&values, exp).expect("Invalid value"));
+    }
+
+    if exp.starts_with('(') && exp.ends_with(')') {
+        let exp = exp[1..exp.len()-1].trim();
+        return parse_expression(exp, values)
+    }
     
     if exp.starts_with("return") {
         let exp = exp.replace("return", "");
         return Expression::Return(Arc::new(parse_expression(exp.trim(), values)))
     }
 
-    if exp.starts_with('"') && exp.ends_with('"') {
-        return Expression::Value(get_val_from_id(&values, exp).expect("Invalid value"));
+    if exp.starts_with("if") {
+        // format: if condition { body } else { body }
+        let mut exp = exp[2..exp.len()].trim().to_string();
+        let mut layers = 0;
+        let mut condition = String::new();
+
+        for l in exp.chars() {
+            if l == '(' || l == '{' || l == '[' {
+                layers += 1;
+            } else if l == ')' || l == '}' || l == ']' {
+                layers -= 1;
+            }
+
+            if layers == 0 && l == '{' && condition.len() > 0 {
+                break;
+            } else {
+                condition.push(l);
+            }
+        }
+
+        exp = exp[condition.to_string().len()..exp.len()].trim().to_string();
+        let mut body = String::new();
+        layers = 0;
+
+        for l in exp.chars() {
+            if l == '(' || l == '{' || l == '[' {
+                layers += 1;
+            } else if l == ')' || l == '}' || l == ']' {
+                layers -= 1;
+            }
+
+            if layers == 0 {
+                body.push(l);
+                break;
+            } else {
+                body.push(l);
+            }
+        }
+
+        let condition = parse_expression(condition.trim(), values);
     }
-    
-    // let mut tokens: Vec<&str> = exp.split(' ').collect();
-
-    // if tokens.contains(&"=") {
-    //     if tokens[0] == "var" || tokens[0] == "let" || tokens[0] == "const" {
-    //         tokens.remove(0);
-    //     }
-
-    //     let var_name = tokens[0];
-
-    //     let value = &tokens[tokens.iter().position(|&t| t == "=").unwrap()+1..];
-    //     let value = parse_expression(&value.join(" "));
-
-    //     return Expression::Assignement(var_name.into(), Arc::new(value))
-    // }
 
     Expression::None
 }

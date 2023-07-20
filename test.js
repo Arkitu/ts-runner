@@ -7,4 +7,8 @@ TransformStream({
     property:true,
     b: "hello"
 });
-return "ciqu"
+if (true) {
+    print("true");
+} else{
+    print("false");
+}
