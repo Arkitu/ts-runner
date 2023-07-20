@@ -11,7 +11,8 @@ use id_vec::IdVec;
 
 type VariableName<'a> = str256;
 type Memory<'a> = HashMap<VariableName<'a>, Value<'a>>;
-type Values<'a> = IdVec<Value<'a>>;
+
+type ParsedExpressions<'a> = IdVec<Expression<'a>>;
 
 #[derive(Clone)]
 struct Scope<'a> {
@@ -86,6 +87,11 @@ impl Into<bool> for Value<'_> {
         }
     }
 }
+impl<'a> Into<Expression<'a>> for Value<'a> {
+    fn into(self) -> Expression<'a> {
+        Expression::Value(self)
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Expression<'a> {
@@ -102,6 +108,8 @@ enum Expression<'a> {
     // value
     Value(Value<'a>),
     Return(Arc<Expression<'a>>),
+    ArrayBuilder(Vec<Expression<'a>>),
+    ObjectBuilder(HashMap<VariableName<'a>, Expression<'a>>),
     None
 }
 impl<'a> Expression<'a> {
@@ -160,12 +168,26 @@ impl<'a> Expression<'a> {
             Expression::Return(exp) => {
                 exp.run(scope.clone()).await
             },
+            Expression::ArrayBuilder(expressions) => {
+                let mut result = Vec::new();
+                for expression in expressions {
+                    result.push(expression.run(scope.clone()).await);
+                }
+                Value::Array(Arc::new(result))
+            },
+            Expression::ObjectBuilder(expressions) => {
+                let mut result = HashMap::new();
+                for (name, expression) in expressions {
+                    result.insert(name.clone(), expression.run(scope.clone()).await);
+                }
+                Value::Object(Arc::new(result))
+            },
             Expression::None => Value::None
         }
     }
 }
 
-fn get_val_from_id<'a>(values: &Values<'a>, id: &str) -> Option<Value<'a>> {
+fn get_exp_from_id<'a>(values: &ParsedExpressions<'a>, id: &str) -> Option<Expression<'a>> {
     match id[1..id.len()-1].parse::<usize>() {
         Ok(id) => {
             match values.get(Id::from_index(id)) {
@@ -177,9 +199,9 @@ fn get_val_from_id<'a>(values: &Values<'a>, id: &str) -> Option<Value<'a>> {
     }
 }
 
-fn parse_value<'a>(values: &mut Values<'a>, val: String) -> Value<'a> {
+fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Value<'a>> {
     let val = val.trim();
-    if val == "null" || val == "Null" {
+    Some(if val == "null" || val == "Null" {
         Value::Null
     } else if val == "none" || val == "None" {
         Value::None
@@ -205,7 +227,12 @@ fn parse_value<'a>(values: &mut Values<'a>, val: String) -> Value<'a> {
             if value.len() == 0 {
                 continue;
             }
-            arr.push(get_val_from_id(values, value.trim()).expect("Invalid value"));
+            let val = get_exp_from_id(values, value.trim()).expect("Invalid value");
+            if let Expression::Value(v) = val {
+                arr.push(v);
+            } else {
+                return None;
+            }
         }
         Value::Array(Arc::new(arr))
     } else if val.starts_with('{') && val.ends_with('}') {
@@ -217,20 +244,25 @@ fn parse_value<'a>(values: &mut Values<'a>, val: String) -> Value<'a> {
             let mut value = value.split(":");
             let key = value.next().unwrap().trim();
             let value = value.next().unwrap().trim();
-            obj.insert(key.into(), get_val_from_id(values, value).expect("Invalid value"));
+            let val = get_exp_from_id(values, value).expect("Invalid value");
+            if let Expression::Value(v) = val {
+                obj.insert(key.into(), v);
+            } else {
+                return None;
+            }
         }
         Value::Object(Arc::new(obj))
     } else {
-        panic!("Invalid value: {}", val)
-    }
+        return None
+    })
 }
 
 /// Returns the number of characters removed
-fn parse_value_in_context(ctx: &mut String, values: &mut Values, range: Range<usize>) -> isize {
+fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> isize {
     let str_val = ctx[range.clone()].to_string();
     let mut removed_chars: isize = str_val.len() as isize;
-    let val = parse_value(values, str_val);
-    let id = values.insert(val.clone()).index_value().to_string();
+    let val = parse_value(values, str_val).expect("Invalid value");
+    let id = values.insert(val.clone().into()).index_value().to_string();
     ctx.replace_range(range, &("\"".to_string() + &id + "\""));
     removed_chars -= id.len() as isize + 2;
     removed_chars
@@ -248,7 +280,7 @@ enum ParsedValue {
     None
 }
 
-fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut String, current_vals: &mut Vec<(ParsedValue, usize, isize)>, removed_chars: &mut isize) {
+fn iter_char(values: &mut ParsedExpressions, exp: &str, i: usize, l: char, new_exp: &mut String, current_vals: &mut Vec<(ParsedValue, usize, isize)>, removed_chars: &mut isize) {
     let current_val = current_vals.last().unwrap_or(&(ParsedValue::None, 0, 0));
 
     match current_val.0 {
@@ -337,7 +369,7 @@ fn iter_char(values: &mut Values, exp: &str, i: usize, l: char, new_exp: &mut St
     }
 }
 
-fn parse_values(exp: &mut String, values: &mut Values) {
+fn parse_values(exp: &mut String, values: &mut ParsedExpressions) {
     let mut new_exp = exp.clone();
     // (value_type, start_index, removed_chars_at_start)
     let mut current_vals: Vec<(ParsedValue, usize, isize)> = Vec::new();
@@ -423,7 +455,7 @@ fn standardize_code(exp: &str) -> String {
     exp
 }
 
-fn parse_expression<'a>(exp: &str, values: &mut Values<'a>) -> Expression<'a> {
+fn parse_expression<'a>(exp: &str, values: &mut ParsedExpressions<'a>) -> Expression<'a> {
     if exp.len() == 0 {
         return Expression::None
     }
@@ -436,8 +468,12 @@ fn parse_expression<'a>(exp: &str, values: &mut Values<'a>) -> Expression<'a> {
         return Expression::ExpressionList(exps)
     }
 
+    if let Some(v) = get_exp_from_id(&values, exp) {
+        return v
+    }
+
     if exp.starts_with('"') && exp.ends_with('"') {
-        return Expression::Value(get_val_from_id(&values, exp).expect("Invalid value"));
+        return get_exp_from_id(&values, exp).expect("Invalid value");
     }
 
     if exp.starts_with('(') && exp.ends_with(')') {
@@ -495,8 +531,8 @@ fn parse_expression<'a>(exp: &str, values: &mut Values<'a>) -> Expression<'a> {
     Expression::None
 }
 
-fn parse_code(exp: &str) -> (Expression, Values) {
-    let mut values: Values = IdVec::new();
+fn parse_code(exp: &str) -> (Expression, ParsedExpressions) {
+    let mut values: ParsedExpressions = IdVec::new();
     let mut exp = exp.trim().to_string();
     parse_values(&mut exp, &mut values);
     println!("{}", exp);
@@ -516,8 +552,8 @@ async fn main() {
 
     let mut root_scope = Scope::new(None);
 
-    let (root_exp, values) = parse_code(&content);
+    let (root_exp, exps) = parse_code(&content);
 
     println!("{:?}", root_exp);
-    println!("{:#?}", values.into_iter().collect::<Vec<Value>>());
+    println!("{:#?}", exps.into_iter().collect::<Vec<Expression>>());
 }
