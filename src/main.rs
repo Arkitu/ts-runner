@@ -258,14 +258,24 @@ fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Va
 }
 
 /// Returns the number of characters removed
-fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> isize {
+fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> Result<isize, ()> {
     let str_val = ctx[range.clone()].to_string();
     let mut removed_chars: isize = str_val.len() as isize;
     let val = parse_value(values, str_val).expect("Invalid value");
     let id = values.insert(val.clone().into()).index_value().to_string();
     ctx.replace_range(range, &("\"".to_string() + &id + "\""));
     removed_chars -= id.len() as isize + 2;
-    removed_chars
+    Ok(removed_chars)
+}
+
+fn parse_expression_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> Result<isize, ()> {
+    let str_val = ctx[range.clone()].to_string();
+    let mut removed_chars: isize = str_val.len() as isize;
+    let val = parse_expression(&str_val, values);
+    let id = values.insert(val.clone()).index_value().to_string();
+    ctx.replace_range(range, &("\"".to_string() + &id + "\""));
+    removed_chars -= id.len() as isize + 2;
+    Ok(removed_chars)
 }
 
 #[derive(Debug)]
@@ -274,9 +284,10 @@ enum ParsedValue {
     String(char),
     Number,
     Array,
-    Object,
     // length
     Symbol(usize),
+    Scope,
+    ScopeOrObject,
     None
 }
 
@@ -289,7 +300,7 @@ fn iter_char(values: &mut ParsedExpressions, exp: &str, i: usize, l: char, new_e
                 return;
             }
             let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
-            *removed_chars += parse_value_in_context(new_exp, values, range);
+            *removed_chars += parse_value_in_context(new_exp, values, range).expect("Invalid value");
             current_vals.pop();
             return
         },
@@ -298,26 +309,40 @@ fn iter_char(values: &mut ParsedExpressions, exp: &str, i: usize, l: char, new_e
                 return
             }
             let range = (current_val.1 as isize-current_val.2) as usize..(i as isize-removed_chars.to_owned()) as usize;
-            *removed_chars += parse_value_in_context(new_exp, values, range);
+            *removed_chars += parse_value_in_context(new_exp, values, range).expect("Invalid value");
             current_vals.pop();
             iter_char(values, exp, i, l, new_exp, current_vals, removed_chars);
         },
         ParsedValue::Array => {
             if l == ']' {
                 let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
-                *removed_chars += parse_value_in_context(new_exp, values, range);
+                *removed_chars += parse_value_in_context(new_exp, values, range).expect("Invalid value");
                 current_vals.pop();
                 return
             }
         },
-        ParsedValue::Object => {
+        ParsedValue::ScopeOrObject => {
             if l == '}' {
                 let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
-                *removed_chars += parse_value_in_context(new_exp, values, range);
+
+                if let Ok(i) = parse_value_in_context(new_exp, values, range.clone()) {
+                    *removed_chars += i
+                } else {
+                    // scope
+                    *removed_chars += parse_expression_in_context(new_exp, values, range).expect("Invalid value");
+                }
                 current_vals.pop();
                 return
             }
         },
+        ParsedValue::Scope => {
+            if l == '}' {
+                let range = (current_val.1 as isize-current_val.2) as usize..(i as isize+1-removed_chars.to_owned()) as usize;
+                *removed_chars += parse_expression_in_context(new_exp, values, range).expect("Invalid value");
+                current_vals.pop();
+                return
+            }
+        }
         ParsedValue::Symbol(len) => {
             if i-current_val.1 == len {
                 current_vals.pop();
@@ -337,11 +362,16 @@ fn iter_char(values: &mut ParsedExpressions, exp: &str, i: usize, l: char, new_e
         current_vals.push((ParsedValue::String(l), i, removed_chars.to_owned()));
     } else if l.is_numeric() {
         current_vals.push((ParsedValue::Number, i, removed_chars.to_owned()));
+    } else if l == '{' {
+        // scope
+        if last_char == ' ' || last_char == ',' || last_char == ':' || last_char == '=' || last_char == '|' || last_char == '&' || last_char == '!' || last_char == '?' || last_char == '(' || last_char == '[' {
+            current_vals.push((ParsedValue::ScopeOrObject, i, removed_chars.to_owned()));
+        } else {
+            current_vals.push((ParsedValue::Scope, i, removed_chars.to_owned()));
+        }
     } else if last_char == ' ' || last_char == ',' || last_char == ':' || last_char == '=' || last_char == '|' || last_char == '&' || last_char == '!' || last_char == '?' || last_char == '(' || last_char == '[' {
         if l == '[' {
             current_vals.push((ParsedValue::Array, i, removed_chars.to_owned()));
-        } else if l == '{' {
-            current_vals.push((ParsedValue::Object, i, removed_chars.to_owned()));
         } else if exp[i..exp.len()].starts_with("true") || exp[i..exp.len()].starts_with("True") || exp[i..exp.len()].starts_with("false") || exp[i..exp.len()].starts_with("False") || exp[i..exp.len()].starts_with("null") || exp[i..exp.len()].starts_with("Null") || exp[i..exp.len()].starts_with("undefined") || exp[i..exp.len()].starts_with("Undefined") || exp[i..exp.len()].starts_with("nan") || exp[i..exp.len()].starts_with("NaN") || exp[i..exp.len()].starts_with("Infinity") || exp[i..exp.len()].starts_with("infinity") || exp[i..exp.len()].starts_with("none") || exp[i..exp.len()].starts_with("None") {
             let len = if exp[i..exp.len()].starts_with("true") || exp[i..exp.len()].starts_with("True") || exp[i..exp.len()].starts_with("null") || exp[i..exp.len()].starts_with("Null") {
                 4
@@ -362,7 +392,7 @@ fn iter_char(values: &mut ParsedExpressions, exp: &str, i: usize, l: char, new_e
             if after_char == ' ' || after_char == ',' || after_char == '=' || after_char == '|' || after_char == '&' || after_char == '!' || after_char == '?' || after_char == ')' || after_char == ']' || after_char == '}' {
                 let rel_i = ((i as isize)-removed_chars.to_owned()) as usize;
                 let range = rel_i..(rel_i+len);
-                *removed_chars += parse_value_in_context(new_exp, values, range);
+                *removed_chars += parse_value_in_context(new_exp, values, range).expect("Invalid value");
                 current_vals.push((ParsedValue::Symbol(len), i, removed_chars.to_owned()));
             }
         }
