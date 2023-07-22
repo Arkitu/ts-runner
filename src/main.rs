@@ -268,7 +268,7 @@ fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, rang
     Ok(removed_chars)
 }
 
-fn parse_expression_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> Result<isize, ()> {
+fn parse_expression_in_context<'a>(ctx: &'a mut String, values: &'a mut ParsedExpressions<'a>, range: Range<usize>) -> Result<isize, ()> {
     let str_val = ctx[range.clone()].to_string();
     let mut removed_chars: isize = str_val.len() as isize;
     let val = parse_code_with_values(&str_val, values);
