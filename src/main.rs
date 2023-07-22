@@ -452,6 +452,7 @@ fn standardize_code(exp: &str) -> String {
         if exp.contains(token) {
             let mut new_exp = String::new();
             let mut last_e = String::new();
+            let mut last_was_token = false;
 
             for e in exp.split(token) {
                 if e.len() == 0 {continue}
