@@ -271,7 +271,7 @@ fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, rang
 fn parse_expression_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> Result<isize, ()> {
     let str_val = ctx[range.clone()].to_string();
     let mut removed_chars: isize = str_val.len() as isize;
-    let val = parse_expression(&str_val, values);
+    let val = parse_code_with_values(&str_val, values);
     let id = values.insert(val.clone()).index_value().to_string();
     ctx.replace_range(range, &("\"".to_string() + &id + "\""));
     removed_chars -= id.len() as isize + 2;
@@ -459,10 +459,16 @@ fn standardize_code(exp: &str) -> String {
 
                 let e = e.to_string();
 
-                if last_e.chars().last().unwrap().is_alphanumeric() || e.chars().nth(0).unwrap().is_alphanumeric() {
+                if last_e.chars().last().unwrap_or(' ').is_alphanumeric() || e.chars().nth(0).unwrap().is_alphanumeric() {
+                    if last_was_token {
+                        new_exp.push_str(" ");
+                    }
                     new_exp.push_str(&e);
+                    new_exp.push_str(token);
+                    last_was_token = false;
                 } else {
-                    new_exp = new_exp.trim_end().to_string() + " " + e.trim_start();
+                    new_exp = new_exp.trim_end().to_string() + " " + token + " " + e.trim_start();
+                    last_was_token = true;
                 }
 
                 last_e = e;
@@ -563,14 +569,19 @@ fn parse_expression<'a>(exp: &str, values: &mut ParsedExpressions<'a>) -> Expres
     Expression::None
 }
 
-fn parse_code(exp: &str) -> (Expression, ParsedExpressions) {
-    let mut values: ParsedExpressions = IdVec::new();
+fn parse_code_with_values<'a>(exp: &str, values: &'a mut ParsedExpressions<'a>) -> Expression<'a> {
     let mut exp = exp.trim().to_string();
-    parse_values(&mut exp, &mut values);
+    parse_values(&mut exp, values);
     println!("{}", exp);
     let exp = &standardize_code(&exp);
     println!("{}", exp);
-    let exp = parse_expression(&exp, &mut values);
+    let exp = parse_expression(&exp, values);
+    exp
+}
+
+fn parse_code<'a>(exp: &str) -> (Expression<'a>, ParsedExpressions<'a>) {
+    let mut values: ParsedExpressions = IdVec::new();
+    let exp = parse_code_with_values(exp, &mut values);
     (exp, values)
 }
 
