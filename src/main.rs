@@ -199,9 +199,9 @@ fn get_exp_from_id<'a>(values: &ParsedExpressions<'a>, id: &str) -> Option<Expre
     }
 }
 
-fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Value<'a>> {
+fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Result<Value<'a>, ()> {
     let val = val.trim();
-    Some(if val == "null" || val == "Null" {
+    Ok(if val == "null" || val == "Null" {
         Value::Null
     } else if val == "none" || val == "None" {
         Value::None
@@ -231,7 +231,7 @@ fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Va
             if let Expression::Value(v) = val {
                 arr.push(v);
             } else {
-                return None;
+                return Err(());
             }
         }
         Value::Array(Arc::new(arr))
@@ -242,18 +242,18 @@ fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Va
                 continue;
             }
             let mut value = value.split(":");
-            let key = value.next().unwrap().trim();
-            let value = value.next().unwrap().trim();
+            let key = value.next().ok_or(())?.trim();
+            let value = value.next().ok_or(())?.trim();
             let val = get_exp_from_id(values, value).expect("Invalid value");
             if let Expression::Value(v) = val {
                 obj.insert(key.into(), v);
             } else {
-                return None;
+                return Err(());
             }
         }
         Value::Object(Arc::new(obj))
     } else {
-        return None
+        return Err(());
     })
 }
 
@@ -261,7 +261,7 @@ fn parse_value<'a>(values: &mut ParsedExpressions<'a>, val: String) -> Option<Va
 fn parse_value_in_context(ctx: &mut String, values: &mut ParsedExpressions, range: Range<usize>) -> Result<isize, ()> {
     let str_val = ctx[range.clone()].to_string();
     let mut removed_chars: isize = str_val.len() as isize;
-    let val = parse_value(values, str_val).expect("Invalid value");
+    let val = parse_value(values, str_val)?;
     let id = values.insert(val.clone().into()).index_value().to_string();
     ctx.replace_range(range, &("\"".to_string() + &id + "\""));
     removed_chars -= id.len() as isize + 2;
@@ -450,28 +450,25 @@ fn standardize_code(exp: &str) -> String {
 
     for token in SPACE_TOKEN.iter() {
         if exp.contains(token) {
-            let mut exps = Vec::new();
-            for exp in exp.split(token) {
-                exps.push(exp.trim());
+            let mut new_exp = String::new();
+            let mut last_e = String::new();
+
+            for e in exp.split(token) {
+                if e.len() == 0 {continue}
+
+                let e = e.to_string();
+
+                if last_e.chars().last().unwrap().is_alphanumeric() || e.chars().nth(0).unwrap().is_alphanumeric() {
+                    new_exp.push_str(&e);
+                } else {
+                    new_exp = new_exp.trim_end().to_string() + " " + e.trim_start();
+                }
+
+                last_e = e;
             }
-            exp = exps.join(format!(" {} ", token).as_str());
-        }
-    }
 
-    if exp.contains(',') {
-        let mut exps = Vec::new();
-        for exp in exp.split(',') {
-            exps.push(exp.trim());
+            exp = new_exp;
         }
-        exp = exps.join(",");
-    }
-
-    if exp.contains("else") {
-        let mut exps = Vec::new();
-        for exp in exp.split("else") {
-            exps.push(exp.trim());
-        }
-        exp = exps.join("else");
     }
 
     if exp.starts_with("var") {
@@ -506,8 +503,10 @@ fn parse_expression<'a>(exp: &str, values: &mut ParsedExpressions<'a>) -> Expres
         return get_exp_from_id(&values, exp).expect("Invalid value");
     }
 
+    println!("exp avant: {}", exp);
     if exp.starts_with('(') && exp.ends_with(')') {
         let exp = exp[1..exp.len()-1].trim();
+        println!("exp: {}", exp);
         return parse_expression(exp, values)
     }
     
@@ -556,6 +555,8 @@ fn parse_expression<'a>(exp: &str, values: &mut ParsedExpressions<'a>) -> Expres
         }
 
         let condition = parse_expression(condition.trim(), values);
+
+        println!("condition: {:?}", condition);
     }
 
     Expression::None
